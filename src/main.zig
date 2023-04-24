@@ -8,38 +8,55 @@ pub fn main() !void {
     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
     std.debug.print("All your {s} are belong to {s}.\n", .{ "drift", "zwerve" });
 
-    var server = Server.init(std.heap.page_allocator, .{ .reuse_address = true });
+    var server = Server.init(std.heap.page_allocator, .{ .reuse_address = true, .kernel_backlog = 4096 });
     defer server.deinit();
 
     try server.listen(try net.Address.parseIp("127.0.0.1", 8080));
 
     while (true) {
-        var buf: [8192]u8 = undefined;
-        const res = try server.accept(.{ .static = &buf }); // use a buffer for headers
-        // const res = try server.accept(.{ .dynamic = 8192 });
+        // var buf: [8192]u8 = undefined;
+        // _ = buf;
+        std.log.info("Waiting for a new connection ...", .{});
+        // const res = try server.accept(.{ .static = &buf }); // use a buffer for headers
+        const res = try server.accept(.{ .dynamic = 8192 });
 
+        // try handler(res);
         const thread = try std.Thread.spawn(.{}, handler, .{res});
         thread.detach();
     }
 }
 
 fn handler(res: *Server.Response) !void {
-    std.log.info("A new thread is spawned !", .{});
-
+    std.log.info("New thread started ...", .{});
+    try res.headers.append("server", "zwerve");
     while (true) { // because keepalive
         defer res.reset();
-        try res.wait();
+
+        res.wait() catch {
+            std.log.info("Client disconnected ...", .{});
+            break;
+        };
+
+        if (std.os.getenv("ZFIX") != null) {
+            const req_connection = res.request.headers.getFirstValue("connection");
+            const req_keepalive = req_connection != null and !std.ascii.eqlIgnoreCase("close", req_connection.?);
+            if (req_keepalive) {
+                res.connection.conn.closing = false;
+            }
+        }
 
         std.log.info("{s}: {}-> {s}", .{ getDate(), res.request.method, res.request.target });
 
         switch (res.request.method) {
             .GET => {
-                try res.headers.append("server", "zwerve drift");
-                try sendfile(res, res.request.target[1..]);
+                if (res.request.target.len > 1) {
+                    try sendfile(res, res.request.target[1..]);
+                } else {
+                    try sendfile(res, "index.html");
+                }
             },
             else => {
                 res.transfer_encoding = .{ .content_length = res.request.target.len };
-                try res.headers.append("server", "zwerve handbrake turn");
                 try res.do();
                 try res.writer().writeAll(res.request.target);
                 try res.finish();
@@ -48,19 +65,18 @@ fn handler(res: *Server.Response) !void {
 
         if (res.connection.conn.closing) break;
     }
+    std.log.info("Thread ended ...", .{});
 }
 
 fn sendfile(res: *std.http.Server.Response, filename: []const u8) !void {
-    var file = std.fs.cwd().openFile(filename, .{}) catch blk: {
-    break :blk std.fs.cwd().openFile("index.html", .{}) catch {
-            res.status = .not_found;
-            res.transfer_encoding = .{ .content_length = filename.len + 7 };
-            try res.do();
-            try res.writer().writeAll(filename);
-            try res.writer().writeAll(": wuh?\n");
-            // try res.finish();
-            return;
-        };
+    var file = std.fs.cwd().openFile(filename, .{}) catch {
+        res.status = .not_found;
+        res.transfer_encoding = .{ .content_length = filename.len + 7 };
+        try res.do();
+        try res.writer().writeAll(filename);
+        try res.writer().writeAll(": wuh?\n");
+        try res.finish();
+        return;
     };
 
     defer file.close();
