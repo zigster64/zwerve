@@ -1,2 +1,6 @@
 # zwerve
-A Young and Phonky HTTP server, applicable for Drifting.  Uses std.http.Server
+![zwerve](https://github.com/zigster64/zwerve/blob/main/doc/zwerve.jpg)
+
+A Phonky HTTP server, applicable for Drifting.
+
+Uses only basic std.http.Server
